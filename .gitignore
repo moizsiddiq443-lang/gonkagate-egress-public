@@ -3,4 +3,5 @@ scripts/*.jsonl
 scripts/*.md
 scripts/.tmp-registry.json
 scripts/.tmp-grok-registry.json
+scripts/.tmp-grok-registry-*.json
 *.log

@@ -21,6 +21,16 @@ on:
         description: "extra factory args (e.g. --signup-first)"
         required: false
         type: string
+      count:
+        description: "attempts per run (batch; keep <=8 per runner IP)"
+        required: false
+        default: "1"
+        type: string
+      hedge:
+        description: "parallel attempts per run (hedge factor; 1-4)"
+        required: false
+        default: "1"
+        type: string
 
 permissions:
   contents: write
@@ -42,16 +52,13 @@ jobs:
           npm i playwright-core@1.63.0
           npx --yes playwright@1.63.0 install --with-deps chromium
 
-      - name: Run grok factory (fresh datacenter IP, reset-rail + device-flow mint)
+      - name: Run grok factory BATCH (fresh datacenter IP, reset-rail + device-flow mint)
         run: |
-          EMAIL_ARG=""
-          if [ -n "${{ github.event.inputs.email }}" ]; then EMAIL_ARG="${{ github.event.inputs.email }}"; fi
-          EXTRA_ARG=""
-          if [ -n "${{ github.event.inputs.extra_args }}" ]; then EXTRA_ARG="${{ github.event.inputs.extra_args }}"; fi
-          node scripts/grok-factory.mjs $EMAIL_ARG $EXTRA_ARG --registry scripts/.tmp-grok-registry.json
-
-      - name: Envelope-encrypt runner results (ciphertext only)
-        run: node scripts/grok-enc.mjs scripts/.tmp-grok-registry.json
+          COUNT="${{ github.event.inputs.count }}"; COUNT="${COUNT:-1}"
+          HEDGE="${{ github.event.inputs.hedge }}"; HEDGE="${HEDGE:-1}"
+          node scripts/grok-factory-batch.mjs --count "$COUNT" --hedge "$HEDGE" \
+            --email "${{ github.event.inputs.email }}" \
+            --factory-args "${{ github.event.inputs.extra_args }}"
 
       - name: Commit encrypted runner results
         run: |
