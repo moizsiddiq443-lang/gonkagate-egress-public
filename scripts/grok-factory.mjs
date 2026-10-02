@@ -81,12 +81,20 @@ function findChromium() {
   return null;
 }
 
-async function enatorGen() {
+// Email pool selection: rotate across fresh emailnator pools (2=plusGmail, 8=googlemail; 3=dotGmail is BURNED).
+const EMAIL_TYPES = String(process.env.GROK_EMAIL_TYPES || "2,8").split(",").map((s) => Number(s.trim())).filter((n) => n > 0);
+const MAX_CYCLES = Number(process.env.GROK_MAX_CYCLES || 4);
+let emailTypeIdx = 0;
+function nextEmailType() { const t = EMAIL_TYPES[emailTypeIdx % EMAIL_TYPES.length]; emailTypeIdx++; return t; }
+async function enatorGen(type) {
+  const t = type || nextEmailType();
   const r = await fetch(`${EMAILNATOR_BASE}/api/generate-email`, {
-    method: "POST", headers: HDRS, body: JSON.stringify({ ids: [3] }),
+    method: "POST", headers: HDRS, body: JSON.stringify({ ids: [t] }),
   });
   const d = await r.json();
-  return d.email || d.address || String(d);
+  const em = d.email || d.address || String(d);
+  console.log(new Date().toISOString().slice(11, 19), "enatorGen type=" + t + " ->", em);
+  return em;
 }
 
 async function enatorList(email) {
@@ -397,7 +405,7 @@ async function main() {
     let code = null;
     let b = "";
     let signupMode = signupFirst; // signup rail: fresh accounts have NO MFA wall
-    for (let cycle = 1; cycle <= 3 && !code; cycle++) {
+    for (let cycle = 1; cycle <= MAX_CYCLES && !code; cycle++) {
       if (cycle > 1) {
         email = await enatorGen();
         enc = encodeURIComponent(email);
@@ -440,12 +448,8 @@ async function main() {
         log("reset page:", b.replace(/\s+/g, " ").slice(0, 160));
         if (/you have been blocked|attention required/i.test(b)) { console.error("BLOCKED: Cloudflare block page"); process.exit(4); }
         if (/too many code requests/i.test(b)) {
-          log("RATE_LIMITED — waiting 60s then retrying send");
-          await page.waitForTimeout(60000);
-          await page.goto(`https://accounts.x.ai/reset-password?email=${enc}`, { waitUntil: "domcontentloaded", timeout: 45000 });
-          await page.waitForTimeout(10000);
-          b = await bodyText(page);
-          log("reset page after wait:", b.replace(/\s+/g, " ").slice(0, 160));
+          log("RATE_LIMITED (address burned) - reminting fresh address");
+          continue; // fast-fail: the address-level limit does not clear in 60s; take a fresh pool address
         }
         if (/no account|doesn't exist|not found|invalid email/i.test(b)) {
           log("EMAIL NOT REGISTERED — doing signup step first");
