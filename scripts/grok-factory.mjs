@@ -622,11 +622,15 @@ async function main() {
     log("authed:", authed);
     if (!authed) throw new Error("NO_AUTH: sign-in did not establish a session for " + email);
 
-    // ---- 5. device-flow OAuth mint (NON-FATAL: the account is already created + password set;
-    //         a failed/hung consent must never cost us the credentials) ----
+    // ---- 5. device-flow OAuth mint (NON-FATAL + HARD watchdog: the account is already
+    //         created + password set; a hung/failed consent must never cost the credentials) ----
     let token = { access_token: "", refresh_token: "", expires_in: 0 };
+    const deviceTimeoutMs = Number(process.env.GROK_DEVICE_TIMEOUT_MS || 480000); // 8 min
     try {
-      token = await deviceFlow(page, ctx, email, password, log);
+      token = await Promise.race([
+        deviceFlow(page, ctx, email, password, log),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("device flow watchdog " + Math.round(deviceTimeoutMs / 60000) + "min")), deviceTimeoutMs)),
+      ]);
       log("TOKEN OK access:", token.access_token.length, "refresh:", token.refresh_token ? token.refresh_token.length : 0, "expires_in:", token.expires_in);
     } catch (e) {
       log("DEVICE_FLOW_FAILED (non-fatal, account kept):", String(e.message).slice(0, 140));
