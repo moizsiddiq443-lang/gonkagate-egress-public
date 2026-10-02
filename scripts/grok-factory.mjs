@@ -201,6 +201,7 @@ async function deviceFlow(page, ctx, email, password, log) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ client_id: CLIENT_ID, scope: SCOPE }).toString(),
+    signal: AbortSignal.timeout(20000),
   });
   if (!r.ok) throw new Error("device/code " + r.status + " " + (await r.text()).slice(0, 200));
   const dc = await r.json();
@@ -288,11 +289,18 @@ await page.waitForTimeout(6000);
   // unregistered while the page sits on "Authorize". Re-click re-submits.
   let token = null;
   for (let i = 0; i < 90; i++) {
-    const tr = await fetch(`${AUTH}/oauth2/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: dc.device_code, client_id: CLIENT_ID }).toString(),
-    });
+    let tr;
+    try {
+      tr = await fetch(`${AUTH}/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: dc.device_code, client_id: CLIENT_ID }).toString(),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (e) {
+      await new Promise((r2) => setTimeout(r2, 5000));
+      continue;
+    }
     const j = await tr.json().catch(() => ({}));
     if (j.access_token) { token = j; break; }
     if (j.error === "authorization_pending") {
@@ -614,9 +622,15 @@ async function main() {
     log("authed:", authed);
     if (!authed) throw new Error("NO_AUTH: sign-in did not establish a session for " + email);
 
-    // ---- 5. device-flow OAuth mint ----
-    const token = await deviceFlow(page, ctx, email, password, log);
-    log("TOKEN OK access:", token.access_token.length, "refresh:", token.refresh_token ? token.refresh_token.length : 0, "expires_in:", token.expires_in);
+    // ---- 5. device-flow OAuth mint (NON-FATAL: the account is already created + password set;
+    //         a failed/hung consent must never cost us the credentials) ----
+    let token = { access_token: "", refresh_token: "", expires_in: 0 };
+    try {
+      token = await deviceFlow(page, ctx, email, password, log);
+      log("TOKEN OK access:", token.access_token.length, "refresh:", token.refresh_token ? token.refresh_token.length : 0, "expires_in:", token.expires_in);
+    } catch (e) {
+      log("DEVICE_FLOW_FAILED (non-fatal, account kept):", String(e.message).slice(0, 140));
+    }
 
     // ---- 6. registry ----
     const cookies = await ctx.cookies();
