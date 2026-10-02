@@ -641,6 +641,18 @@ async function main() {
     // positive). Abort fast instead of burning the device-flow + consent + poll.
     if (/must provide a second factor/i.test(b)) {
       console.error("MFA_ACCOUNT_EARLY: post-password 2FA challenge for " + email);
+      // 2FA-walled accounts are still CREATED (password set) - never lose them.
+      // Save registry with sso (if any) so a later retry can attempt the consent again.
+      try {
+        const cksM = await ctx.cookies();
+        const ssoM = (cksM.find((c) => c.name === "sso") || {}).value || null;
+        if (registryPath) {
+          const regM = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, "utf8")) : [];
+          regM.push({ email, password, sso: ssoM, access_token: "", refresh_token: "", expires_at: 0, created: new Date().toISOString(), model_tier: "basic", mfa: true, source: "grok-factory-v2" });
+          fs.writeFileSync(registryPath, JSON.stringify(regM, null, 2));
+        }
+        console.log("ACCOUNT_SAVED_MFA " + JSON.stringify({ email, sso: !!ssoM }));
+      } catch (eM) { console.error("registry write on MFA failed:", eM.message); }
       process.exit(3);
     }
 
@@ -656,7 +668,21 @@ async function main() {
       authed = await uiLogin(page, ctx, email, password, log);
     }
     log("authed:", authed);
-    if (!authed) throw new Error("NO_AUTH: sign-in did not establish a session for " + email);
+    if (!authed) {
+      // account exists (password was set) but no session could be established -
+      // save it for a later retry instead of losing the credentials.
+      try {
+        const cksN = await ctx.cookies();
+        const ssoN = (cksN.find((c) => c.name === "sso") || {}).value || null;
+        if (registryPath) {
+          const regN = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, "utf8")) : [];
+          regN.push({ email, password, sso: ssoN, access_token: "", refresh_token: "", expires_at: 0, created: new Date().toISOString(), model_tier: "basic", no_auth: true, source: "grok-factory-v2" });
+          fs.writeFileSync(registryPath, JSON.stringify(regN, null, 2));
+        }
+        console.log("ACCOUNT_SAVED_NOAUTH " + JSON.stringify({ email, sso: !!ssoN }));
+      } catch (eN) { console.error("registry write on NO_AUTH failed:", eN.message); }
+      throw new Error("NO_AUTH: sign-in did not establish a session for " + email);
+    }
 
     // ---- 5. device-flow OAuth mint (NON-FATAL + HARD watchdog: the account is already
     //         created + password set; a hung/failed consent must never cost the credentials) ----
