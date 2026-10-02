@@ -45,11 +45,19 @@ const log = (...a) => console.log(`[batch ${new Date().toISOString().slice(11, 1
 
 log(`starting: count=${count} hedge=${hedge} run_id=${RUN_ID} extra=[${factoryArgs.join(" ")}]`);
 
-function spawnAsync(cmd, argv, env = process.env) {
+function spawnAsync(cmd, argv, env = process.env, timeoutMs = 0) {
   return new Promise((resolve) => {
     const p = spawn(cmd, argv, { stdio: "inherit", env });
-    p.on("close", (code) => resolve(code ?? 1));
-    p.on("error", (e) => { console.error("[batch] spawn error:", e.message); resolve(1); });
+    let killer = null;
+    if (timeoutMs > 0) {
+      killer = setTimeout(() => {
+        console.error(`[batch] attempt timeout ${Math.round(timeoutMs / 60000)}min - killing child pid ${p.pid}`);
+        try { p.kill("SIGKILL"); } catch (e) { /* ignore */ }
+      }, timeoutMs);
+    }
+    const fin = (code) => { if (killer) clearTimeout(killer); resolve(code ?? 1); };
+    p.on("close", (code) => fin(code));
+    p.on("error", (e) => { console.error("[batch] spawn error:", e.message); fin(1); });
   });
 }
 
@@ -59,7 +67,7 @@ async function attempt(idx) {
   try {
     const fargs = [...factoryArgs, "--registry", reg];
     if (email && count === 1) fargs.unshift(email);
-    code = await spawnAsync("node", [FACTORY, ...fargs]);
+    code = await spawnAsync("node", [FACTORY, ...fargs], process.env, 45 * 60 * 1000);
     log(`attempt ${idx} exit=${code}`);
   } catch (e) {
     log(`attempt ${idx} threw: ${e.message}`);

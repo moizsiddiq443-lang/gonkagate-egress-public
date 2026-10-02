@@ -38,6 +38,7 @@ permissions:
 jobs:
   factory:
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
