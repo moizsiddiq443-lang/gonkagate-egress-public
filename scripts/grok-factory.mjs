@@ -230,21 +230,40 @@ async function deviceFlow(page, ctx, email, password, log) {
 await page.waitForTimeout(6000);
   b = await bodyText(page);
   if (/log into your account|login with google|login with email/i.test(b)) {
-    // NEW xAI behaviour (2026-10-02): after submitting the user code the device-verify
-    // page bounces to the login form even when an sso session exists (tokens came back
-    // empty = 8-min watchdog on both runner and local). Sign in inline, then re-enter
-    // the consent URL.
-    log("device consent bounced to LOGIN (post-code) - inline uiLogin");
-    const okL2 = await uiLogin(page, ctx, email, password, log);
-    log("inline uiLogin (post-code):", okL2);
-    await page.goto(dc.verification_uri_complete, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-    await page.waitForTimeout(8000);
+    // NEW xAI behaviour (2026-10-02 ~10:00Z): after submitting the user code the device-verify
+    // page bounces to the login form. The accounts.x.ai sso session does NOT satisfy this host
+    // (uiLogin's accounts.x.ai route was tried on runner 37007408902 - did not help).
+    // Sign in IN PLACE on this very page.
+    log("device consent bounced to LOGIN (post-code) - in-place sign-in");
+    await clickAny(page, ["login with email"]);
+    await page.waitForTimeout(4000);
+    const em2 = page.locator("input[name=email], input[type=email]").first();
+    if (await em2.count()) {
+      await em2.fill(email);
+      await page.waitForTimeout(600);
+      await clickAny(page, ["next", "continue"]);
+      await page.waitForTimeout(6000);
+    }
+    const pw2 = page.locator("input[name=password], input[type=password]").first();
+    if (await pw2.count()) {
+      await pw2.fill(password);
+      await page.waitForTimeout(12000); // turnstile auto-solve
+      await clickAny(page, ["login", "sign in", "continue"]);
+      await page.waitForTimeout(8000);
+    }
     b = await bodyText(page);
-    log("device page1c:", b.replace(/\s+/g, " ").slice(0, 180));
-    const c4b = await clickAny(page, ["continue", "next", "authorize"]);
-    log("device click1b:", c4b);
-    await page.waitForTimeout(6000);
-    b = await bodyText(page);
+    log("consent after in-place login:", b.replace(/\s+/g, " ").slice(0, 200));
+    if (/log into your account|login with email/i.test(b) && !/allow|authorize|approve|deny/i.test(b)) {
+      // still not signed in on this host: bounce through the code step once more
+      await page.goto(dc.verification_uri_complete, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
+      await page.waitForTimeout(8000);
+      b = await bodyText(page);
+      log("device page1d:", b.replace(/\s+/g, " ").slice(0, 180));
+      const c4c = await clickAny(page, ["continue", "next", "authorize"]);
+      log("device click1c:", c4c);
+      await page.waitForTimeout(6000);
+      b = await bodyText(page);
+    }
   }
   if (/second factor|verify your account|authenticator app|\bADM\b|Google Authenticator|KeePass/i.test(b)) {
     // consent-page MFA wall — 2FA step-up that the sso session does NOT satisfy for
