@@ -229,6 +229,23 @@ async function deviceFlow(page, ctx, email, password, log) {
   log("device click1:", c4);
 await page.waitForTimeout(6000);
   b = await bodyText(page);
+  if (/log into your account|login with google|login with email/i.test(b)) {
+    // NEW xAI behaviour (2026-10-02): after submitting the user code the device-verify
+    // page bounces to the login form even when an sso session exists (tokens came back
+    // empty = 8-min watchdog on both runner and local). Sign in inline, then re-enter
+    // the consent URL.
+    log("device consent bounced to LOGIN (post-code) - inline uiLogin");
+    const okL2 = await uiLogin(page, ctx, email, password, log);
+    log("inline uiLogin (post-code):", okL2);
+    await page.goto(dc.verification_uri_complete, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
+    await page.waitForTimeout(8000);
+    b = await bodyText(page);
+    log("device page1c:", b.replace(/\s+/g, " ").slice(0, 180));
+    const c4b = await clickAny(page, ["continue", "next", "authorize"]);
+    log("device click1b:", c4b);
+    await page.waitForTimeout(6000);
+    b = await bodyText(page);
+  }
   if (/second factor|verify your account|authenticator app|\bADM\b|Google Authenticator|KeePass/i.test(b)) {
     // consent-page MFA wall — 2FA step-up that the sso session does NOT satisfy for
     // this account (observed ~1/3 of pool). Not solvable without the TOTP seed →
