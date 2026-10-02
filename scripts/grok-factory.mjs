@@ -89,7 +89,7 @@ function nextEmailType() { const t = EMAIL_TYPES[emailTypeIdx % EMAIL_TYPES.leng
 async function enatorGen(type) {
   const t = type || nextEmailType();
   const r = await fetch(`${EMAILNATOR_BASE}/api/generate-email`, {
-    method: "POST", headers: HDRS, body: JSON.stringify({ ids: [t] }),
+    method: "POST", headers: HDRS, body: JSON.stringify({ ids: [t] }), signal: AbortSignal.timeout(20000),
   });
   const d = await r.json();
   const em = d.email || d.address || String(d);
@@ -99,7 +99,7 @@ async function enatorGen(type) {
 
 async function enatorList(email) {
   const r = await fetch(`${EMAILNATOR_BASE}/api/message-list`, {
-    method: "POST", headers: HDRS, body: JSON.stringify({ email, limit: 30 }),
+    method: "POST", headers: HDRS, body: JSON.stringify({ email, limit: 30 }), signal: AbortSignal.timeout(20000),
   });
   const d = await r.json();
   return (d && d.messages) || [];
