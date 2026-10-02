@@ -497,7 +497,8 @@ async function main() {
         await page.waitForTimeout(3000);
       };
       await triggerSend();
-      const warmUntil = Date.now() + 60000; // 60s warm-up: codes this fast are pre-existing stales
+      const freshInbox = seen.size === 0; // no pre-existing codes = fresh pool address (fast delivery OK)
+      const warmUntil = Date.now() + (freshInbox ? 8000 : 60000); // warm-up only for recycled inboxes with stale codes
       for (let i = 0; i < 18; i++) { // 30s ticks, ~9 min per inbox
         const msgs = await enatorList(email).catch(() => []);
         for (const m of msgs) {
