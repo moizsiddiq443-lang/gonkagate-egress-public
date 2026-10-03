@@ -543,7 +543,7 @@ async function main() {
       await triggerSend();
       const freshInbox = seen.size === 0; // no pre-existing codes = fresh pool address (fast delivery OK)
       const warmUntil = Date.now() + (freshInbox ? 8000 : 60000); // warm-up only for recycled inboxes with stale codes
-      for (let i = 0; i < 18; i++) { // 30s ticks, ~9 min per inbox
+      for (let i = 0; i < 50; i++) { // 30s ticks, ~25 min per inbox (delivery can be delayed >9min under the 2026-10 throttle)
         const msgs = await enatorList(email).catch(() => []);
         for (const m of msgs) {
           const sub = m.subject || "";
@@ -561,7 +561,7 @@ async function main() {
           code = cv; break;
         }
         if (code) break;
-        if (i > 0 && i % 6 === 0) await triggerSend(); // every ~3 min
+        if (i > 0 && i % 20 === 0) await triggerSend(); // every ~10 min (each send consumes IP quota - keep few)
         await new Promise((r) => setTimeout(r, 30000));
       }
       log("cycle " + cycle + " ended: code=" + (code || "NONE") + " in " + Math.round((Date.now() - t0) / 1000) + "s (sends: " + sends + ")");

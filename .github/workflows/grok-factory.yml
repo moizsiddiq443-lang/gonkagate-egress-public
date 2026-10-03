@@ -1,10 +1,10 @@
-# Grok (xAI) account factory — PUBLIC repo egress lane (free unlimited runner minutes)
+﻿# Grok (xAI) account factory â€” PUBLIC repo egress lane (free unlimited runner minutes)
 # Confidentiality by design (same doctrine as gonkagate-egress):
 #   - factory runs with --registry pointing at a .tmp file (gitignored)
 #   - grok-enc.mjs envelope-encrypts results (AES-256-GCM + RSA-4096) before commit
 #   - plaintext temp files are deleted by grok-enc.mjs
 #   - NO password input: the runner generates a random password in-run and encrypts it
-#     into the result artifact — nothing sensitive ever lands in dispatch inputs/logs
+#     into the result artifact â€” nothing sensitive ever lands in dispatch inputs/logs
 # The public repo only ever contains scripts + ciphertext. Only the local holder
 # of egress-private.pem can decrypt (scripts/grok-decrypt.mjs locally).
 
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       email:
-        description: "temp email (optional — runner mints a fresh dotGmail from its own IP when omitted)"
+        description: "temp email (optional â€” runner mints a fresh dotGmail from its own IP when omitted)"
         required: false
         type: string
       extra_args:
@@ -54,6 +54,8 @@ jobs:
           npx --yes playwright@1.63.0 install --with-deps chromium
 
       - name: Run grok factory BATCH (fresh datacenter IP, reset-rail + device-flow mint)
+        env:
+          GROK_MAX_CYCLES: "2"
         run: |
           COUNT="${{ github.event.inputs.count }}"; COUNT="${COUNT:-1}"
           HEDGE="${{ github.event.inputs.hedge }}"; HEDGE="${HEDGE:-1}"
@@ -70,6 +72,6 @@ jobs:
           for i in 1 2 3 4 5; do
             git pull --rebase 2>/dev/null || true
             if git push; then echo "push ok (attempt $i)"; break; fi
-            echo "push failed (attempt $i) — retrying"
+            echo "push failed (attempt $i) â€” retrying"
             sleep 5
           done
