@@ -150,6 +150,87 @@ async function bodyText(page) {
   try { return (await page.locator("body").innerText()) || ""; } catch { return ""; }
 }
 
+function trustClick(page, nameRe) {
+  // auth.x.ai buttons ignore synthetic el.click() (isTrusted=false) - they need
+  // real CDP input events via Playwright locators. Regex name handles "Login" /
+  // "Log in" / "Next" / "Resend (28)" variants with case+space tolerance.
+  return (async () => {
+    try {
+      const loc = page.getByRole("button", { name: nameRe }).first();
+      if (await loc.count()) { await loc.click({ timeout: 4000 }); return true; }
+    } catch {}
+    try {
+      const locs = page.locator("input[type=submit]");
+      const n = await locs.count();
+      for (let i = 0; i < n; i++) {
+        const v = (await locs.nth(i).getAttribute("value").catch(() => "")) || "";
+        if (v && nameRe.test(v)) { await locs.nth(i).click({ timeout: 4000 }); return true; }
+      }
+    } catch {}
+    return null;
+  })();
+}
+
+async function consentLogin(page, ctx, email, password, seen, log) {
+  // 2026-10-03: xAI DISABLED password sign-in (accounts.x.ai/api/auth/sso/check ->
+  // {"enabled":false,"passwordSignInAvailable":false}) - the in-place login on the
+  // consent host NEVER advances in password mode, which is why every account minted
+  // after 2026-10-02 ~10:00Z came out tokenless. Fix: the form's "Email sign-in
+  // code" mode - clicking it SWITCHES mode AND triggers the code send; the code
+  // lands in the emailnator inbox (same subject format as reset codes).
+  // The send costs an IP-bucket token, and the reset send happened minutes earlier,
+  // so round 0 usually RATE_LIMITS silently (no delivery) -> wait ~40min for refill
+  // and use the form's Resend button (up to 3 rounds).
+  for (let i = 0; i < 20; i++) {
+    await page.waitForTimeout(3000);
+    const bNow = await bodyText(page);
+    if (/allow|authorize|approve/i.test(bNow)) return true;
+    const codeIn = page.locator("input:visible:not([type=hidden]):not([type=submit]):not([type=email]):not([type=checkbox])").last();
+    const pwV = page.locator("input[type=password]:visible").first();
+    const emV = page.locator("input[name=email], input[type=email]:visible").first();
+    const codeBtn = page.getByRole("button", { name: /email sign-in code/i }).first();
+    const hasCodeBtn = await codeBtn.count().catch(() => 0);
+    if (hasCodeBtn) {
+      log("consent: password sign-in server-disabled -> EMAIL SIGN-IN CODE mode");
+      await codeBtn.click({ timeout: 4000 }).catch(() => {});
+      let code = null;
+      for (let round = 0; round < 3 && !code; round++) {
+        if (round > 0) {
+          log("consent code round " + round + ": waiting 40min for IP-bucket refill, then resend");
+          await page.waitForTimeout(40 * 60 * 1000);
+          const rs = page.getByRole("button", { name: /resend/i }).first();
+          if (await rs.count().catch(() => 0)) { await rs.click({ timeout: 4000 }).catch(() => {}); log("clicked Resend"); }
+          else { (await trustClick(page, /log\s?in/i)) || (await clickAny(page, ["log in", "login"])); }
+        }
+        code = await enatorWaitCode(email, round === 0 ? 42 : 30, 10000, seen);
+        log("consent sign-in code (round " + round + "):", code ? code.slice(0, 3) + "-" + code.slice(3) : "NONE");
+      }
+      if (!code) throw new Error("CONSENT_CODE_NONE: no sign-in code delivered for " + email);
+      await codeIn.fill(code).catch(() => {});
+      await page.waitForTimeout(800);
+      (await trustClick(page, /log\s?in|verify|continue/i)) || (await clickAny(page, ["log in", "login", "verify", "continue"]));
+      await page.waitForTimeout(8000);
+    } else if (await pwV.count().catch(() => 0)) {
+      await pwV.fill(password);
+      await page.waitForTimeout(10000); // turnstile auto-solve window
+      (await trustClick(page, /log\s?in/i)) || (await clickAny(page, ["log in", "login", "sign in"]));
+      await page.waitForTimeout(6000);
+    } else if (await emV.count().catch(() => 0)) {
+      const cur = await emV.inputValue().catch(() => "");
+      if (!cur) { await emV.fill(email); await page.waitForTimeout(800); }
+      (await trustClick(page, /^next$/i)) || (await trustClick(page, /continue/i)) || (await clickAny(page, ["next", "continue"]));
+      await page.waitForTimeout(4000);
+    } else if (/login with email|log into your account/i.test(bNow)) {
+      (await trustClick(page, /login with email/i)) || (await clickAny(page, ["login with email"]));
+      await page.waitForTimeout(3000);
+    } else {
+      log("consent iter " + i + ": state:", bNow.replace(/\s+/g, " ").slice(0, 100));
+    }
+  }
+  const bEnd = await bodyText(page);
+  return /allow|authorize|approve/i.test(bEnd);
+}
+
 async function hasSso(ctx) {
   const cks = await ctx.cookies().catch(() => []);
   return (cks || []).some((c) => ["sso", "x-userid", "sso-rw"].includes(c.name));
@@ -196,7 +277,7 @@ async function uiLogin(page, ctx, email, password, log) {
   return ok;
 }
 
-async function deviceFlow(page, ctx, email, password, log) {
+async function deviceFlow(page, ctx, email, password, log, seen = new Set()) {
   const r = await fetch(`${AUTH}/oauth2/device/code`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -230,40 +311,13 @@ async function deviceFlow(page, ctx, email, password, log) {
 await page.waitForTimeout(6000);
   b = await bodyText(page);
   if (/log into your account|login with google|login with email/i.test(b)) {
-    // NEW xAI behaviour (2026-10-02 ~10:00Z): after submitting the user code the device-verify
-    // page bounces to the login form. The accounts.x.ai sso session does NOT satisfy this host
-    // (uiLogin's accounts.x.ai route was tried on runner 37007408902 - did not help).
-    // Sign in IN PLACE on this very page.
-    log("device consent bounced to LOGIN (post-code) - in-place sign-in");
-    await clickAny(page, ["login with email"]);
-    await page.waitForTimeout(4000);
-    const em2 = page.locator("input[name=email], input[type=email]").first();
-    if (await em2.count()) {
-      await em2.fill(email);
-      await page.waitForTimeout(600);
-      await clickAny(page, ["next", "continue"]);
-      await page.waitForTimeout(6000);
-    }
-    const pw2 = page.locator("input[name=password], input[type=password]").first();
-    if (await pw2.count()) {
-      await pw2.fill(password);
-      await page.waitForTimeout(12000); // turnstile auto-solve
-      await clickAny(page, ["login", "sign in", "continue"]);
-      await page.waitForTimeout(8000);
-    }
+    // 2026-10-03: xAI disabled password sign-in - the consent host requires an
+    // in-place login and password mode never advances. Adaptive consent login
+    // (picker -> email -> EMAIL SIGN-IN CODE mode -> code catch with resends).
+    log("device consent bounced to LOGIN (post-code) - adaptive consent login");
+    const okC = await consentLogin(page, ctx, email, password, seen, log);
+    log("consent login result:", okC);
     b = await bodyText(page);
-    log("consent after in-place login:", b.replace(/\s+/g, " ").slice(0, 200));
-    if (/log into your account|login with email/i.test(b) && !/allow|authorize|approve|deny/i.test(b)) {
-      // still not signed in on this host: bounce through the code step once more
-      await page.goto(dc.verification_uri_complete, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-      await page.waitForTimeout(8000);
-      b = await bodyText(page);
-      log("device page1d:", b.replace(/\s+/g, " ").slice(0, 180));
-      const c4c = await clickAny(page, ["continue", "next", "authorize"]);
-      log("device click1c:", c4c);
-      await page.waitForTimeout(6000);
-      b = await bodyText(page);
-    }
   }
   if (/second factor|verify your account|authenticator app|\bADM\b|Google Authenticator|KeePass/i.test(b)) {
     // consent-page MFA wall — 2FA step-up that the sso session does NOT satisfy for
@@ -687,10 +741,10 @@ async function main() {
     // ---- 5. device-flow OAuth mint (NON-FATAL + HARD watchdog: the account is already
     //         created + password set; a hung/failed consent must never cost the credentials) ----
     let token = { access_token: "", refresh_token: "", expires_in: 0 };
-    const deviceTimeoutMs = Number(process.env.GROK_DEVICE_TIMEOUT_MS || 480000); // 8 min
+    const deviceTimeoutMs = Number(process.env.GROK_DEVICE_TIMEOUT_MS || 5400000); // 90 min (consent code-catch with 40-min bucket-refill resends)
     try {
       token = await Promise.race([
-        deviceFlow(page, ctx, email, password, log),
+        deviceFlow(page, ctx, email, password, log, seen),
         new Promise((_, reject) => setTimeout(() => reject(new Error("device flow watchdog " + Math.round(deviceTimeoutMs / 60000) + "min")), deviceTimeoutMs)),
       ]);
       log("TOKEN OK access:", token.access_token.length, "refresh:", token.refresh_token ? token.refresh_token.length : 0, "expires_in:", token.expires_in);
